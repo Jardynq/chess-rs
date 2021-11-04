@@ -1,0 +1,36 @@
+[package]
+name = "testbench"
+version = "0.1.0"
+edition = "2021"
+
+
+[[bin]]
+name = "testbench"
+path = "./src/main.rs"
+bench = false
+
+[[bench]]
+name = "bench"
+path = "./src/main.rs"
+harness = false
+
+
+[profile.test]
+debug = true
+opt-level = 3
+codegen-units = 1
+
+[profile.bench]
+debug = true
+opt-level = 3
+codegen-units = 1
+
+[profile.release]
+debug = true
+
+
+[dependencies]
+core = { path = "../core" }
+criterion = { version = "0.3.5", features = ["html_reports"]}
+pprof = { version = "0.6.1", features = ["flamegraph"] }
+pretty_assertions = "1.0.0"
