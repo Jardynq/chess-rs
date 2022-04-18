@@ -14,3 +14,5 @@ core = { path = "../core" }
 crossterm = "0.22.1"
 nanorand = "0.6.1"
 arrayvec = "0.7.2"
+bitintr = "0.3.0"
+wizard = { path = "../wizard" }

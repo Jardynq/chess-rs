@@ -22,8 +22,12 @@ split-debuginfo = "unpacked"
 
 
 [dependencies]
+lazy_static = "1.4.0"
+bitintr = "0.3.0"
 arrayvec = "0.7.2"
 rayon = "1.5.1"
 nanorand = "0.6.1"
 nanoserde = "0.1.27"
 itoa = "0.4.8"
+log = "0.4.14"
+simplelog = "0.10.2"

@@ -31,6 +31,8 @@ debug = true
 
 [dependencies]
 core = { path = "../core" }
+wizard = { path = "../wizard" }
 criterion = { version = "0.3.5", features = ["html_reports"]}
-pprof = { version = "0.6.1", features = ["flamegraph"] }
-pretty_assertions = "1.0.0"
+pretty_assertions = "0.7.2"
+nanorand = "0.6.1"
+bitintr = "0.3.0"

@@ -1,0 +1,17 @@
+[package]
+name = "wizard"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "wizard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wizard"
+path = "src/bin.rs"
+
+
+[dependencies]
+nanoserde = "0.1.29"
+nanorand = "0.7.0"

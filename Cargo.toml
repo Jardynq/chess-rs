@@ -2,5 +2,6 @@
 members = [
     "core",
     "testbench",
-    "frontend"
+    "frontend",
+    "wizard",
 ]

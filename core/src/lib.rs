@@ -4,6 +4,14 @@
 
 pub mod bitboard;
 
+pub mod consts;
+
+use log::{
+    info,
+    error,
+    warn,
+};
+
 
 use bitboard::{
     PlayerBitboard,
@@ -11,7 +19,7 @@ use bitboard::{
 };
 use nanoserde::{SerJson, DeJson};
 
-use std::{fmt::{self, Debug, write}, io::{BufRead, Write}};
+use std::{fmt::{self, Debug, write}, io::{BufRead, Write}, path::PathBuf};
 use nanorand::{Rng, WyRand};
 use rayon::prelude::*;
 
@@ -23,7 +31,7 @@ use arrayvec::{ArrayString, ArrayVec};
 
 
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum MoveType {
     Quiet          = 0b00,
@@ -761,8 +769,8 @@ pub fn material(game: &GameState, action: &Move) -> isize {
 pub struct PlayerState {
     pub pieces: ArrayVec<Piece, 16>,
     pub bitboard: PlayerBitboard,
-    pub can_queen_castle: bool,
-    pub can_king_castle: bool,
+    pub can_queenside_castle: bool,
+    pub can_kingside_castle: bool,
 }
 impl PlayerState {
     pub fn value(&self) -> f32 {
@@ -875,6 +883,7 @@ pub enum MoveSpecialRules {
 pub type Board = [Tile; 64];
 
 
+
 #[derive(Clone, Debug)]
 pub struct GameState {
     pub board: Board,
@@ -882,7 +891,7 @@ pub struct GameState {
     pub white: PlayerState,
     pub black: PlayerState,
 
-    pub en_passant: Option<Coord>,
+    pub en_passant: Option<usize>,
 
     pub halfmove_count: u32,
     pub fullmove_count: u32,
@@ -921,41 +930,124 @@ impl GameState {
         false
     }
     pub fn play_move_unchecked(&mut self, movement: Move) {
+        let move_type = movement.get_type();
         let to = movement.get_target();
         let from = movement.get_from();
         let attacker = self.board[from as usize];
         let target = self.board[to as usize];
+
+        info!("played: {} -> {}: {:?}", from, to, movement.get_type());
+
 
         // Update board state
         self.board[to as usize] = attacker;
         self.board[from as usize] = Tile::empty();
 
         // Update attacker state
-        {
-            let index = attacker.get_index() as usize;
-            let player = self.get_player_mut(self.current);
-            let (attacker_type, coord, _) = &mut player.pieces[index];
-    
-            // Clear from bit
-            player.bitboard.unset_bit(*attacker_type, *coord);
-            // Set corrd to the new position
-            *coord = Coord::from(to);
-            // Set to bit
-            player.bitboard.set_bit(*attacker_type, *coord);
-        }
+        self.move_piece(attacker, to);
 
         // Update target state if neccesary
         if target.is_occupied() {
-            let index = target.get_index() as usize;
-            let enemy = self.get_player_mut(!self.current);
-            let piece = &mut enemy.pieces[index];
-            enemy.bitboard.unset_bit(piece.0, piece.1);
-            *piece = (PieceType::None, Coord::default(), ArrayVec::new());
+            self.move_capture_piece(target);
+        }
+
+
+        if move_type != MoveType::CaptureEnPassant {
+            match self.en_passant {
+                Some(tile_index) => {
+                    let ep_index = match self.current {
+                        Color::White => tile_index - 8,
+                        Color::Black => tile_index + 8,
+                    };
+                    self.board[ep_index as usize].set_en_passant(false);                    
+                    self.en_passant = None;
+                }
+                None => (),
+            }
+        }
+        
+        match move_type {
+            MoveType::PawnDoubleMove => {
+                let ep_index = match self.current {
+                    Color::White => from - 8,
+                    Color::Black => from + 8,
+                };
+                self.board[ep_index as usize].set_en_passant(true);
+                self.en_passant = Some(to as usize);
+            }
+            MoveType::CaptureEnPassant => {
+                let tile_index = self.en_passant.unwrap();
+                let tile = self.board[tile_index];
+                self.move_capture_piece(tile);
+                self.board[tile.get_index() as usize] = Tile::empty();
+            }
+            MoveType::PromotionKnight | MoveType::CapturePromotionKnight => {
+                self.move_promote_pawn(to as usize, PieceType::Knight);
+            }
+            MoveType::PromotionBishop | MoveType::CapturePromotionBishop => {
+                self.move_promote_pawn(to as usize, PieceType::Bishop);
+            }
+            MoveType::PromotionRook | MoveType::CapturePromotionRook => {
+                self.move_promote_pawn(to as usize, PieceType::Rook);
+            }
+            MoveType::PromotionQueen | MoveType::CapturePromotionQueen => {
+                self.move_promote_pawn(to as usize, PieceType::Queen);
+            }
+            _ => (),
         }
     }
+    fn move_piece(&mut self, attacker: Tile, to: u8) {
+        let current = self.current;
+        let player = self.get_player_mut(self.current);
 
+        let index = attacker.get_index() as usize;
+        let (attacker_type, coord, _) = &mut player.pieces[index];
 
-    pub fn generate_king_masks(&self, color: Color) -> (Bitboard, Bitboard) {
+        // Clear from bit
+        player.bitboard.unset_bit(*attacker_type, *coord);
+        // Set coord to the new position
+        *coord = Coord::from(to);
+        // Set to bit
+        player.bitboard.set_bit(*attacker_type, *coord);
+
+        if *attacker_type == PieceType::King {
+            player.can_kingside_castle = false;
+            player.can_queenside_castle = false;
+        }
+        if *attacker_type == PieceType::Rook {
+            let rank = match current {
+                Color::White => 7,
+                Color::Black => 0,
+            };
+
+            if *coord == (Coord { rank, file: 0}) {
+                player.can_queenside_castle = false;
+            } else if *coord == (Coord { rank, file: 7}) {
+                player.can_kingside_castle = false;
+            }
+        }
+    }
+    fn move_capture_piece(&mut self, target: Tile) {
+        let enemy = self.get_player_mut(!self.current);
+
+        let index = target.get_index() as usize;
+        let piece = &mut enemy.pieces[index];
+        enemy.bitboard.unset_bit(piece.0, piece.1);
+        *piece = (PieceType::None, Coord::default(), ArrayVec::new());
+    }
+    fn move_promote_pawn(&mut self, to: usize, promotion: PieceType) {
+        let index = self.board[to].get_index();
+        let player = self.get_player_mut(self.current);
+        player.bitboard.unset_bit(PieceType::Pawn, Coord::from(to as u8));
+        player.bitboard.set_bit(promotion, Coord::from(to as u8));
+        
+        player.pieces[index as usize].0 = promotion;
+    }
+    pub fn move_castle(&mut self) {
+
+    }
+
+    pub fn generate_king_masks(&self, color: Color) -> (Bitboard, Bitboard, Bitboard) {
         let player = self.get_player(color).bitboard;
         let enemy = self.get_player(!color).bitboard;
         let mut occlusion = player.occupancy() | enemy.king;
@@ -966,7 +1058,7 @@ impl GameState {
         let king_defence_mask = !enemy_attacks | enemy.occupancy();
         if (enemy_attacks & player.king).0 == 0 {
             // Player king is not in check
-            return (Bitboard(!0), king_defence_mask);
+            return (Bitboard(!0), king_defence_mask, Bitboard(0));
         }
         
         occlusion |= enemy.occupancy() | player.king;
@@ -982,14 +1074,21 @@ impl GameState {
             (enemy.pawns & PlayerBitboard::generate_pawn_attacks(player.king, color))
         };
 
-        (king_check_mask, king_defence_mask)
+        let occlusion = enemy.occupancy() | player.king;
+        let king_pin_mask = {
+            (rays_diagonal & PlayerBitboard::generate_rook_attacks(enemy.rooks, occlusion)) | 
+            (rays_straight & PlayerBitboard::generate_bishop_attacks(enemy.bishops, occlusion)) |
+            (rays_all & PlayerBitboard::generate_queen_attacks(enemy.queens, occlusion))
+        };
+
+        (king_check_mask, king_defence_mask, king_pin_mask)
     }
 
     pub fn generate_moves(&mut self, color: Color) {
         let board = self.board.clone();
         let player_bitboard = self.get_player(color).bitboard.clone();
         let enemy_bitboard = self.get_player(!color).bitboard.clone();
-        let (king_check_mask, king_defence_mask) = self.generate_king_masks(color);
+        let (king_check_mask, king_defence_mask, king_pin_mask) = self.generate_king_masks(color);
 
         let will_move_check_self = |piece_type: PieceType, from: Coord, to: Coord| -> bool {
             // TODO this is temp, use just occupancy instead if that works
@@ -1012,8 +1111,10 @@ impl GameState {
             (player_bitboard.king & enemy_attacks).0 != 0
         };
 
-
+        // TODO: use loops instead of recursion and the nested function
         let single_move_attack = |result: &mut PieceMoves, piece_type: PieceType, from: Coord, to: Coord, movement_mask: Bitboard| -> bool {
+            // TODO: this coord to index is overkill
+            // internally just use an index,
             let to_index = match to.index() {
                 Some(index) => index as u8,
                 None => return true,
@@ -1023,12 +1124,18 @@ impl GameState {
                 None => return true,
             };
 
+            // TODO: combine movement mask and other mask since they only need to be calc for a piece once.
             if !movement_mask.is_occupied(to_index as usize) {
                 return false;
             }
-            if will_move_check_self(piece_type, from, to) {
-                return false;
+            if king_pin_mask.is_occupied(from_index as usize) {
+                // TODO: The first pin only has to be checked once per piece. 
+                if !king_pin_mask.is_occupied(to_index as usize) {
+                    return false;
+                }
             }
+//            if will_move_check_self(piece_type, from, to) {
+//            }
             
 
             let tile = board[to_index as usize];
@@ -1088,9 +1195,11 @@ impl GameState {
                     } else {
                         result.push(Move::new(MoveType::Capture, from_index, to_index));
                     }
+                } else if tile.is_en_passant() {
+                    result.push(Move::new(MoveType::CaptureEnPassant, from_index, to_index as u8));
                 }
             };
-            let move_forward = |result: &mut PieceMoves, to: Coord, promotion_rank: u8| -> bool {
+            let move_forward = |result: &mut PieceMoves, to: Coord, promotion_rank: u8, double: bool| -> bool {
                 let to_index = match to.index() {
                     Some(index) => index as u8,
                     None => return false,
@@ -1103,6 +1212,8 @@ impl GameState {
                         result.push(Move::new(MoveType::PromotionBishop, from_index, to_index));
                         result.push(Move::new(MoveType::PromotionRook, from_index, to_index));
                         result.push(Move::new(MoveType::PromotionQueen, from_index, to_index));
+                    } else if double {
+                        result.push(Move::new(MoveType::PawnDoubleMove, from_index, to_index));
                     } else {
                         result.push(Move::new(MoveType::Quiet, from_index, to_index));
                     }
@@ -1118,9 +1229,9 @@ impl GameState {
             };
             capture_diagonal(&mut result, from.offset(1, dy), promotion_rank);
             capture_diagonal(&mut result, from.offset(-1, dy), promotion_rank);
-            let is_empty = move_forward(&mut result, from.offset(0, dy), promotion_rank);
+            let is_empty = move_forward(&mut result, from.offset(0, dy), promotion_rank, false);
             if from.rank == push_rank && is_empty {
-                move_forward(&mut result, from.offset(0, 2 * dy), promotion_rank);
+                move_forward(&mut result, from.offset(0, 2 * dy), promotion_rank, true);
             }
             result
         };
@@ -1197,6 +1308,7 @@ impl GameState {
                     single_move_attack(&mut result, PieceType::King, coord, coord.offset( -1, 1), king_defence_mask);
                     single_move_attack(&mut result, PieceType::King, coord, coord.offset( -1, 0), king_defence_mask);
                     single_move_attack(&mut result, PieceType::King, coord, coord.offset( -1, -1), king_defence_mask);
+                    
                 }
                 _ => (),
             }
@@ -1379,15 +1491,15 @@ impl GameState {
 
 
         // castling rights
-        let white_rights = self.white.can_king_castle && self.white.can_queen_castle;
-        let black_rights = self.black.can_king_castle && self.black.can_queen_castle;
+        let white_rights = self.white.can_kingside_castle && self.white.can_queenside_castle;
+        let black_rights = self.black.can_kingside_castle && self.black.can_queenside_castle;
         if !white_rights && !black_rights {
             buffer.push('-')
         } else {
-            if self.white.can_king_castle  { buffer.push('K') };
-            if self.white.can_queen_castle { buffer.push('Q') };
-            if self.black.can_king_castle  { buffer.push('k') };
-            if self.black.can_queen_castle { buffer.push('q') };
+            if self.white.can_kingside_castle  { buffer.push('K') };
+            if self.white.can_queenside_castle { buffer.push('Q') };
+            if self.black.can_kingside_castle  { buffer.push('k') };
+            if self.black.can_queenside_castle { buffer.push('q') };
         }
         buffer.push(' ');
 
@@ -1515,11 +1627,11 @@ impl GameState {
             if Some('-') != field.chars().nth(0) {
                 for character in field.chars() {
                     match character {
-                        'k' => result.black.can_king_castle = true,
-                        'q' => result.black.can_queen_castle = true,
+                        'k' => result.black.can_kingside_castle = true,
+                        'q' => result.black.can_queenside_castle = true,
                         
-                        'K' => result.white.can_king_castle = true,
-                        'Q' => result.white.can_queen_castle = true,
+                        'K' => result.white.can_kingside_castle = true,
+                        'Q' => result.white.can_queenside_castle = true,
                     
                         _ => return None,
                     }
@@ -1592,3 +1704,89 @@ impl Default for GameState {
     }
 }
 
+
+
+pub fn init_logger(path: PathBuf) {
+    simplelog::WriteLogger::init(
+        simplelog::LevelFilter::Info, 
+        simplelog::Config::default(), 
+        std::fs::File::create(path).unwrap()
+    ).unwrap();
+}
+
+
+
+
+pub enum Square {
+    A1 = 8 * 0 + 0,
+    B1 = 8 * 0 + 1,
+    C1 = 8 * 0 + 2,
+    D1 = 8 * 0 + 3,
+    E1 = 8 * 0 + 4,
+    F1 = 8 * 0 + 5,
+    G1 = 8 * 0 + 6,
+    H1 = 8 * 0 + 7,
+
+    A2 = 8 * 1 + 0,
+    B2 = 8 * 1 + 1,
+    C2 = 8 * 1 + 2,
+    D2 = 8 * 1 + 3,
+    E2 = 8 * 1 + 4,
+    F2 = 8 * 1 + 5,
+    G2 = 8 * 1 + 6,
+    H2 = 8 * 1 + 7,
+
+    A3 = 8 * 2 + 0,
+    B3 = 8 * 2 + 1,
+    C3 = 8 * 2 + 2,
+    D3 = 8 * 2 + 3,
+    E3 = 8 * 2 + 4,
+    F3 = 8 * 2 + 5,
+    G3 = 8 * 2 + 6,
+    H3 = 8 * 2 + 7,
+
+    A4 = 8 * 3 + 0,
+    B4 = 8 * 3 + 1,
+    C4 = 8 * 3 + 2,
+    D4 = 8 * 3 + 3,
+    E4 = 8 * 3 + 4,
+    F4 = 8 * 3 + 5,
+    G4 = 8 * 3 + 6,
+    H4 = 8 * 3 + 7,
+
+    A5 = 8 * 4 + 0,
+    B5 = 8 * 4 + 1,
+    C5 = 8 * 4 + 2,
+    D5 = 8 * 4 + 3,
+    E5 = 8 * 4 + 4,
+    F5 = 8 * 4 + 5,
+    G5 = 8 * 4 + 6,
+    H5 = 8 * 4 + 7,
+
+    A6 = 8 * 5 + 0,
+    B6 = 8 * 5 + 1,
+    C6 = 8 * 5 + 2,
+    D6 = 8 * 5 + 3,
+    E6 = 8 * 5 + 4,
+    F6 = 8 * 5 + 5,
+    G6 = 8 * 5 + 6,
+    H6 = 8 * 5 + 7,
+
+    A7 = 8 * 6 + 0,
+    B7 = 8 * 6 + 1,
+    C7 = 8 * 6 + 2,
+    D7 = 8 * 6 + 3,
+    E7 = 8 * 6 + 4,
+    F7 = 8 * 6 + 5,
+    G7 = 8 * 6 + 6,
+    H7 = 8 * 6 + 7,
+
+    A8 = 8 * 7 + 0,
+    B8 = 8 * 7 + 1,
+    C8 = 8 * 7 + 2,
+    D8 = 8 * 7 + 3,
+    E8 = 8 * 7 + 4,
+    F8 = 8 * 7 + 5,
+    G8 = 8 * 7 + 6,
+    H8 = 8 * 7 + 7,
+}

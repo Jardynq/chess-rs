@@ -1,0 +1,39 @@
+[tasks.build_quiet_dev]
+command = "cargo"
+args = ["rustc", "--", "-Awarnings"]
+
+[tasks.build_quiet_bench]
+script_runner = "@shell"
+script = '''
+    echo building benches
+    cargo rustc --benches -- -Awarnings 2>nul
+'''
+
+[tasks.build_quiet_test]
+script_runner = "@shell"
+script = '''
+    echo building tests
+    cargo rustc --tests -- -Awarnings 2>nul
+'''
+
+
+
+[tasks.test]
+clear = true
+script_runner = "@duckscript"
+script = '''
+    cargo test --benches
+'''
+#dependencies = ["build_quiet_test"]
+
+[tasks.bench]
+clear = true
+script_runner = "@shell"
+script = '''
+    cargo bench -- --noplot 2>nul
+'''
+#dependencies = ["build_quiet_bench"]
+
+
+[tasks.plot]
+## TODO use flamegraph too bad it only works on linux, since dtrace does not work

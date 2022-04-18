@@ -1,7 +1,12 @@
 use crate::*;
 
-
-macro_rules! assert_eq { ($left:expr, $right:expr$(,)?) => { $left }; }
+use nanorand::Rng;
+use bitintr::Pext;
+use pretty_assertions::{
+    assert_eq,
+    assert_ne,
+};
+//macro_rules! assert_eq { ($left:expr, $right:expr$(,)?) => { $left }; }
 
 
 
@@ -37,6 +42,14 @@ impl std::ops::Add for MoveCountInfo {
 
 // https://www.chessprogramming.org/Perft_Results
 fn get_move_count(state: GameState, depth: usize) -> MoveCountInfo {
+    /*for (index, tile) in state.board.iter().enumerate() {
+        if index % 8 == 0 {
+            println!("");
+        }
+        print!(" {} ", if tile.is_occupied() { "#" } else {"."})
+    }
+    println!("");*/
+
     let mut info = MoveCountInfo::default();
 
     let pieces = match state.current {
@@ -47,24 +60,23 @@ fn get_move_count(state: GameState, depth: usize) -> MoveCountInfo {
     if depth > 0 {
         for (_, _, moves) in pieces {
             for movement in moves {
-                /*if movement.is_capture() {
-                    if let (PieceType::King, _) = state.board[movement.get_target() as usize].get_piece() {
+                if movement.is_capture() {
+                    /*if let (PieceType::King, _) = state.board[movement.get_target() as usize].get_piece() {
                         panic!("King capture\n{}", state.to_fen());
-                    }
-                    if state.current == state.board[movement.get_target() as usize].get_piece().1 {
+                    }*/
+                    if state.current == state.board[movement.get_target() as usize].get_color() {
                         panic!("Self capture\n{}", state.to_fen());
                     }
                     info.captures += 1;
-                }*/
+                }
                 if movement.is_promotion() {
                     info.promotions += 1;
                 }
 
                 let mut state = state.clone();
-                //state.play_move(state.current, Coord::from_index(movement.get_from()), Coord::from_index(movement.get_target()));
-                state.generate_moves(Color::White);
-                state.generate_moves(Color::Black);
+                state.play_move_unchecked(*movement);
                 state.current = !state.current;
+                state.generate_moves(state.current);
                 //state.validate_moves();
                 
                 if state.is_king_checked(state.current) {
@@ -95,9 +107,7 @@ macro_rules! create_perft_testbench {
     ($ply:expr, $name:ident, $($info:tt)*) => {
         fn $name(criterion: &mut Criterion) {
             let mut state = GameState::from_fen(GameState::FEN_CLASSIC).expect("Fen parsing failed. Use fen tests");
-            state.generate_moves(Color::White);
-            state.generate_moves(Color::Black);
-            //state.validate_moves();
+            state.generate_moves(state.current);
 
             criterion.bench_function(concat!("perft for ply ", stringify!($ply)), |bencher| bencher.iter(| | {
                 assert_eq!(get_move_count(state.clone(), $ply), $($info)*);
@@ -236,22 +246,85 @@ create_perft_testbench!(5, perft_ply_5,
     }
 );
 
+
+fn pext(criterion: &mut Criterion) {
+    let mut rng = nanorand::WyRand::new();
+    let pos = bitboard::Bitboard(1 << 28);
+    let blockers: u64 = rng.generate();
+    let tile = rng.generate_range(0..64);
+
+    let mut path = std::path::PathBuf::new();
+    path.push("../");
+    path.push(wizard::DATABASE_PATH);
+    let database = wizard::read_database(Some(path.as_path())).unwrap();
+
+    criterion.bench_function("pext", |bencher| bencher.iter(| | {
+        unsafe {
+            let aaaaa = database.sliding_table[database.magics[tile].key(blockers)];
+        }
+    }));
+}
+fn hashmap(criterion: &mut Criterion) {
+    let mut map = std::collections::HashMap::new();
+
+    let mut squares = Vec::new();
+
+    for square in 0..64 {
+        let mask = bitboard::PlayerBitboard::generate_rook_attacks(bitboard::Bitboard(1 << square as u64), bitboard::Bitboard(0)).0
+            & !bitboard::Bitboard::RANK_MASK[0]
+            & !bitboard::Bitboard::RANK_MASK[7]
+            & !bitboard::Bitboard::FILE_MASK[0]
+            & !bitboard::Bitboard::FILE_MASK[7]
+            & !(1 << square as u64);
+
+        squares.push(mask);
+
+        let mut blockers = 0;
+        loop {
+            let attacks = bitboard::PlayerBitboard::generate_rook_attacks(bitboard::Bitboard(1 << square as u64), bitboard::Bitboard(blockers)).0;
+            map.insert(blockers, attacks);
+            
+            blockers = (blockers - mask) & mask;
+            if blockers == 0 {
+                break;
+            }
+        }
+    }
+
+
+    let blockers = bitboard::Bitboard(nanorand::WyRand::new().generate()).0;
+    criterion.bench_function("hashmap", |bencher| bencher.iter(| | {
+        map.get(&(blockers & squares[28])).unwrap();
+    }));
+}
+fn board(criterion: &mut Criterion) {
+    let pos = bitboard::Bitboard(1 << 28);
+    let blockers = bitboard::Bitboard(!0);//bitboard::Bitboard(nanorand::WyRand::new().generate());
+
+    criterion.bench_function("board", |bencher| bencher.iter(| | {
+        bitboard::PlayerBitboard::generate_rook_attacks(pos, blockers);
+    }));
+}
+
 criterion_group!(
     name = benches;
     config = Criterion::default()
         .plotting_backend(criterion::PlottingBackend::Plotters)
-        .sample_size(10)
+        //.sample_size(10000)
         //.measurement_time(std::time::Duration::from_secs(5))
         ;
     targets = 
         //generate_pseudo_legal_moves,
         //generate_king_check_mask,
         //generate_legal_moves,
+        pext,
+        board,
+        hashmap,
         //move_validation,
         //perft_ply_0,
         //perft_ply_1,
         //perft_ply_2,
         //perft_ply_3,
         //perft_ply_4,
-        perft_ply_5,
+        //perft_ply_5,
 );
